@@ -92,9 +92,9 @@ def test_encoder(cfg: EncoderConfig, bit_depth: int, full_range: bool = False) -
            "-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=25:duration=0.4,format={src_fmt}",
            *cfg.video_args, "-f", "null", "-"]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
         ok = res.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.SubprocessError, RuntimeError):
         ok = False
     _TEST_CACHE[key] = ok
     return ok

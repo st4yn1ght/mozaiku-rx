@@ -124,12 +124,13 @@ python -m mosaic_restore --download-models || warn "Unduh model gagal; akan dico
 cat > mosaic-restore <<'EOF'
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec "$DIR/.venv/bin/python" -m mosaic_restore "$@"
 EOF
 chmod +x mosaic-restore
 
-say "Perangkat yang terdeteksi:"
-python -m mosaic_restore --list-devices
+say "Pemeriksaan sistem:"
+python -m mosaic_restore --check
 if [ -n "$HSA_HINT" ]; then
   warn "GPU $GFX tidak resmi didukung ROCm. Jika GPU tidak terpakai, jalankan dengan: --hsa-override-gfx $HSA_HINT"
 fi

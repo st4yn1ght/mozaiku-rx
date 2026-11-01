@@ -197,8 +197,17 @@ Daftar lengkap opsi: `mosaic-restore --help`.
 
 ## Pemecahan masalah
 
+Langkah pertama untuk masalah apa pun: jalankan pemeriksaan sistem. Perintah ini
+menampilkan GPU/PyTorch, lokasi FFmpeg yang dipakai, encoder AMD yang berfungsi, dan
+status model.
+```bash
+restore.bat --check
+```
+(Linux: `./mosaic-restore --check`)
+
 | Masalah | Solusi |
 |---|---|
+| FFmpeg tidak ditemukan, atau error `WinError 2/3` saat mulai | Pilih salah satu: (1) `winget install Gyan.FFmpeg`; (2) ekstrak FFmpeg *full build* dari gyan.dev ke folder program ini dengan nama `ffmpeg` (sehingga ada `ffmpeg\bin\ffmpeg.exe`); (3) tunjukkan lokasinya dengan `--ffmpeg "C:\lokasi\ffmpeg\bin"`. |
 | "berjalan di CPU" | Jalankan `mosaic-restore --list-devices`. Perbarui driver, lalu jalankan ulang installer. Di Linux, cek grup `render`/`video`. |
 | RX 6700/6600 di Linux tidak terpakai | Tambahkan `--hsa-override-gfx 10.3.0` |
 | VRAM habis (out of memory) | Program otomatis memecah klip. Bisa juga pakai `--clip-length 90` atau `--preset fast`. |

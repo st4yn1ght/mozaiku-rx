@@ -1,6 +1,8 @@
 """Uji unit cepat (CPU, tanpa unduhan model)."""
 
 import io
+import os
+from pathlib import Path
 import pickle
 import zipfile
 
@@ -230,3 +232,78 @@ def test_scan_tracks_memoized_module_names(tmp_path):
     with pytest.raises(UnsafeCheckpointError) as err:
         scan_pickle_globals(p)
     assert "collections.Counter" in str(err.value)
+
+
+# ---------------------------------------------------------------- lokasi FFmpeg
+import shutil as _shutil  # noqa: E402
+
+from mosaic_restore.video import probe as _probe  # noqa: E402
+
+REAL_FFMPEG = _shutil.which("ffmpeg")
+needs_ffmpeg = pytest.mark.skipif(REAL_FFMPEG is None, reason="ffmpeg tidak terpasang")
+
+
+@pytest.fixture
+def fresh_resolver(monkeypatch):
+    monkeypatch.setattr(_probe, "_RESOLVED", {})
+    monkeypatch.setattr(_probe, "_OVERRIDE", {"ffmpeg": None, "ffprobe": None})
+    yield
+
+
+@needs_ffmpeg
+def test_resolver_skips_broken_candidates(tmp_path, monkeypatch, fresh_resolver):
+    folder = tmp_path / "ffmpeg"            # folder bernama "ffmpeg" (bukan executable)
+    folder.mkdir()
+    bad = tmp_path / "bad" / "ffmpeg"       # file bernama ffmpeg yang gagal dijalankan
+    bad.parent.mkdir()
+    bad.write_text("#!/bin/sh\nexit 3\n")
+    bad.chmod(0o755)
+    missing = tmp_path / "nope" / "ffmpeg"  # path tidak ada
+    real_dir = Path(REAL_FFMPEG).parent
+    monkeypatch.setattr(_probe, "_candidates",
+                        lambda tool: [folder, bad, missing, real_dir / tool])
+    ffmpeg, ffprobe, version = _probe.resolve_ffmpeg()
+    assert Path(ffmpeg).name == "ffmpeg" and Path(ffprobe).name == "ffprobe"
+    assert "version" in version
+
+
+def test_resolver_raises_friendly_error_not_oserror(tmp_path, monkeypatch, fresh_resolver):
+    (tmp_path / "ffmpeg").mkdir()
+    monkeypatch.setattr(_probe, "_candidates", lambda tool: [tmp_path / "ffmpeg", tmp_path / "x" / tool])
+    with pytest.raises(RuntimeError) as err:
+        _probe.resolve_ffmpeg()
+    assert "winget install Gyan.FFmpeg" in str(err.value)
+    assert "bukan file" in str(err.value)
+
+
+@needs_ffmpeg
+def test_override_accepts_folder_with_symlinks(tmp_path, fresh_resolver):
+    link_dir = tmp_path / "links"           # meniru folder "WinGet\Links" berisi symlink
+    link_dir.mkdir()
+    for tool in ("ffmpeg", "ffprobe"):
+        (link_dir / tool).symlink_to(_shutil.which(tool))
+    _probe.set_ffmpeg_paths(str(link_dir))
+    ffmpeg, ffprobe, _ = _probe.resolve_ffmpeg()
+    assert Path(ffmpeg) == Path(os.path.realpath(_shutil.which("ffmpeg")))
+    assert Path(ffprobe) == Path(os.path.realpath(_shutil.which("ffprobe")))
+
+
+def test_broken_override_does_not_fall_back_silently(tmp_path, fresh_resolver):
+    _probe.set_ffmpeg_paths(str(tmp_path / "salah" / "ffmpeg.exe"))
+    with pytest.raises(RuntimeError) as err:
+        _probe.resolve_ffmpeg()
+    assert "--ffmpeg" in str(err.value)
+
+
+# ---------------------------------------------------------------- NMS cadangan
+def test_python_nms_matches_torchvision():
+    tv = pytest.importorskip("torchvision.ops")
+    from mosaic_restore.models.detector import nms_python
+
+    torch.manual_seed(5)
+    xy = torch.rand(60, 2) * 300
+    wh = torch.rand(60, 2) * 120 + 5
+    boxes = torch.cat([xy, xy + wh], 1)
+    scores = torch.rand(60)
+    for thr in (0.3, 0.5, 0.7):
+        assert nms_python(boxes, scores, thr).tolist() == tv.nms(boxes, scores, thr).tolist()

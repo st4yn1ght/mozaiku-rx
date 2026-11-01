@@ -1,6 +1,7 @@
 @echo off
 rem Seret (drag & drop) satu atau beberapa file video / folder ke file ini.
 rem Opsi tambahan bisa ditulis langsung, contoh:  restore.bat film.mp4 --preset balanced
+rem Periksa sistem (GPU, FFmpeg, encoder, model):  restore.bat --check
 setlocal
 set "HERE=%~dp0"
 if not exist "%HERE%.venv\Scripts\python.exe" (
@@ -8,6 +9,7 @@ if not exist "%HERE%.venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
+set "PYTHONPATH=%HERE%;%PYTHONPATH%"
 "%HERE%.venv\Scripts\python.exe" -m mosaic_restore %*
 echo.
 pause

@@ -99,7 +99,13 @@ class FrameWriter:
                 frame = self._queue.get()
                 if frame is None:
                     break
-                stdin.write(frame.buf)
+                # pipa tanpa buffer: write() boleh menulis sebagian -> ulangi sampai habis
+                view = memoryview(frame.buf)
+                while view:
+                    written = stdin.write(view)
+                    if not written:
+                        raise OSError("penulisan ke pipa ffmpeg gagal")
+                    view = view[written:]
         except BaseException as exc:  # noqa: BLE001 - dilaporkan saat close()
             self._error = exc
             while True:  # kosongkan antrean agar produsen tidak macet

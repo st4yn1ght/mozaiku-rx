@@ -143,23 +143,26 @@ if ($LASTEXITCODE -ne 0) { Die "Gagal memasang dependensi" }
 & $vpy -m pip install -e . --no-deps | Out-Null
 
 # ------------------------------------------------------------- FFmpeg
-if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-    Warn "FFmpeg belum terpasang (dibutuhkan untuk baca/tulis video, termasuk encoder AMD AMF)."
+# Memakai logika pencarian yang sama dengan program (PATH, folder winget, folder portabel).
+Say "Memeriksa FFmpeg"
+& $vpy -m mosaic_restore --check-ffmpeg
+if ($LASTEXITCODE -ne 0) {
+    Warn "FFmpeg dibutuhkan untuk membaca/menulis video (termasuk encoder AMD AMF)."
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         $ans = Read-Host "Pasang FFmpeg sekarang via winget (Gyan.FFmpeg)? [Y/n]"
         if ($ans -eq "" -or $ans -match "^[Yy]") {
             winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
-            Warn "Tutup & buka ulang jendela terminal agar PATH FFmpeg aktif."
+            & $vpy -m mosaic_restore --check-ffmpeg
         }
     } else {
-        Warn "Unduh FFmpeg (build 'full' dari gyan.dev) lalu tambahkan folder bin ke PATH."
+        Warn "Unduh FFmpeg 'full build' dari gyan.dev, ekstrak ke folder program ini, beri nama folder 'ffmpeg'."
     }
 }
 
 # ------------------------------------------------------------- model & cek
 Say "Mengunduh model (sekali saja, ~130 MB)"
 & $vpy -m mosaic_restore --download-models
-Say "Perangkat yang terdeteksi:"
-& $vpy -m mosaic_restore --list-devices
+Say "Pemeriksaan sistem:"
+& $vpy -m mosaic_restore --check
 Say "Selesai! Seret (drag & drop) file video ke restore.bat, atau jalankan:"
 Write-Host "    restore.bat ""D:\Video\film.mp4"""

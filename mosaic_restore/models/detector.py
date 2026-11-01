@@ -50,6 +50,34 @@ def _parse_output(out):
     raise RuntimeError("Format output model deteksi tidak dikenali (versi ultralytics tidak cocok?)")
 
 
+def nms_python(boxes: torch.Tensor, scores: torch.Tensor, iou_thr: float) -> torch.Tensor:
+    """NMS murni PyTorch (cadangan bila operator C++ torchvision tidak bisa dimuat)."""
+    order = scores.argsort(descending=True)
+    areas = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
+    keep: list[int] = []
+    while order.numel() > 0:
+        i = int(order[0])
+        keep.append(i)
+        rest = order[1:]
+        if rest.numel() == 0:
+            break
+        w = (torch.minimum(boxes[i, 2], boxes[rest, 2]) - torch.maximum(boxes[i, 0], boxes[rest, 0])).clamp(min=0)
+        h = (torch.minimum(boxes[i, 3], boxes[rest, 3]) - torch.maximum(boxes[i, 1], boxes[rest, 1])).clamp(min=0)
+        inter = w * h
+        iou = inter / (areas[i] + areas[rest] - inter).clamp(min=1e-9)
+        order = rest[iou <= iou_thr]
+    return torch.tensor(keep, dtype=torch.long)
+
+
+def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_thr: float) -> torch.Tensor:
+    try:
+        from torchvision.ops import nms as tv_nms
+
+        return tv_nms(boxes, scores, iou_thr)
+    except (ImportError, RuntimeError, NotImplementedError):
+        return nms_python(boxes, scores, iou_thr)
+
+
 def _to_tensor(planes: list[np.ndarray]) -> torch.Tensor:
     arr = np.stack(planes)
     if arr.dtype != np.uint8:
@@ -134,8 +162,6 @@ class MosaicDetector:
         return [self._postprocess(preds[i], proto[i], lb, h, w) for i in range(len(frames))]
 
     def _postprocess(self, pred: torch.Tensor, proto: torch.Tensor, lb, h: int, w: int) -> list[Detection]:
-        from torchvision.ops import nms
-
         nc = self.nc
         score, cls = pred[4:4 + nc].max(0)
         keep = (score > self.conf) & (cls == self.target_class)

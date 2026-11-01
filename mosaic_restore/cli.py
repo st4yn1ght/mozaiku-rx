@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--hsa-override-gfx", metavar="X.Y.Z",
                    help="Linux/ROCm: set HSA_OVERRIDE_GFX_VERSION (mis. 10.3.0 untuk RX 6700/6600)")
     g.add_argument("--list-devices", action="store_true", help="tampilkan GPU yang terdeteksi lalu keluar")
+    g.add_argument("--check", action="store_true",
+                   help="periksa sistem (GPU/PyTorch, FFmpeg, encoder AMD, model) lalu keluar")
+    g.add_argument("--check-ffmpeg", action="store_true", help="periksa FFmpeg saja lalu keluar")
 
     g = p.add_argument_group("model")
     g.add_argument("--model-dir", help="folder penyimpanan bobot model")
@@ -88,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--encoder-preset", help="preset encoder (AMF: quality/balanced/speed; x265: slow/medium/...)")
     g.add_argument("--hwdec", action="store_true", help="decode video dengan GPU (hemat CPU untuk 4K/HEVC)")
     g.add_argument("--vaapi-device", help="Linux: node render VA-API (default /dev/dri/renderD128)")
-    g.add_argument("--ffmpeg", help="path ke ffmpeg (ffprobe dicari di folder yang sama)")
+    g.add_argument("--ffmpeg", help="path ke ffmpeg.exe ATAU folder berisi ffmpeg (ffprobe dicari di folder yang sama)")
 
     g = p.add_argument_group("segmen (pratinjau)")
     g.add_argument("--start", type=parse_time, help="mulai dari waktu ini (detik atau HH:MM:SS)")
@@ -126,6 +129,50 @@ def output_for(src: Path, args, multiple: bool) -> Path:
     return src.with_name(name)
 
 
+def run_check(args) -> int:
+    """Ringkasan kondisi sistem untuk pemecahan masalah."""
+    import platform
+
+    from .device import list_devices
+    from .models import registry
+    from .video import probe as probe_mod
+    from .video.encoders import build_encoder, test_encoder
+
+    ok = True
+    log(f"Program : mosaic-restore {__version__}")
+    log(f"Python  : {sys.version.split()[0]} ({platform.system()} {platform.release()}, {platform.machine()})")
+    log("GPU / PyTorch:")
+    try:
+        for line in list_devices():
+            log(f"  {line}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ERROR: {exc}")
+        ok = False
+    log("FFmpeg:")
+    try:
+        ffmpeg, ffprobe, version = probe_mod.resolve_ffmpeg()
+        log(f"  ffmpeg : {ffmpeg}")
+        log(f"  ffprobe: {ffprobe}")
+        log(f"  versi  : {version}")
+        hw = ["hevc_amf", "h264_amf", "av1_amf"] if sys.platform == "win32" else ["hevc_vaapi", "h264_vaapi", "av1_vaapi"]
+        log("  encoder:")
+        for name in hw + ["libx265", "libx264"]:
+            cfg = build_encoder(name, 18, 8, vaapi_device=args.vaapi_device or "/dev/dri/renderD128")
+            log(f"    {name:11s} {'OK' if test_encoder(cfg, 8) else 'tidak tersedia'}")
+    except RuntimeError as exc:
+        log("  " + str(exc).replace("\n", "\n  "))
+        ok = False
+    log("Model:")
+    directory = Path(args.model_dir) if args.model_dir else registry.default_model_dir()
+    log(f"  folder : {directory}")
+    for key, spec in registry.MODELS.items():
+        path = directory / spec.filename
+        state = "OK" if registry.verify(path, spec) else ("rusak / checksum tidak cocok" if path.exists() else "belum diunduh")
+        log(f"  {key:16s} {state}")
+    log("Hasil: " + ("semua siap." if ok else "ada masalah (lihat di atas)."))
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -144,6 +191,15 @@ def main(argv: list[str] | None = None) -> int:
         for line in list_devices():
             log(line)
         return 0
+    if args.check:
+        return run_check(args)
+    if args.check_ffmpeg:
+        try:
+            log(probe_mod.check_ffmpeg())
+            return 0
+        except RuntimeError as exc:
+            log(f"ERROR: {exc}")
+            return 1
 
     from .models import registry
 
