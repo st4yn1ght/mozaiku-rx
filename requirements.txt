@@ -1,0 +1,4 @@
+# PyTorch (ROCm/DirectML/CPU) dipasang lebih dulu oleh skrip instalasi.
+# Dependensi lain:
+numpy>=1.24
+ultralytics>=8.3.200,<9
