@@ -307,3 +307,86 @@ def test_python_nms_matches_torchvision():
     scores = torch.rand(60)
     for thr in (0.3, 0.5, 0.7):
         assert nms_python(boxes, scores, thr).tolist() == tv.nms(boxes, scores, thr).tolist()
+
+
+# ---------------------------------------------------------------- pemilihan GPU
+import types  # noqa: E402
+
+from mosaic_restore import device as _dev  # noqa: E402
+
+USER_ERROR = ("CUDA error: device kernel image is invalid\nSearch for `hipErrorInvalidImage' in "
+              "https://rocm.docs.amd.com/projects/HIP/en/latest/index.html for more information.")
+
+
+@pytest.fixture
+def fake_hip(monkeypatch):
+    """Simulasi PyTorch ROCm dengan 2 GPU: kartu 16 GB (gfx1031) dan GPU 8 GB (gfx1100)."""
+    props = {
+        0: types.SimpleNamespace(name="AMD Radeon RX 6800 XT", total_memory=16 * 2**30, gcnArchName="gfx1031"),
+        1: types.SimpleNamespace(name="AMD Radeon RX 7600", total_memory=8 * 2**30, gcnArchName="gfx1100:sramecc-"),
+    }
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(props))
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: props[i])
+    monkeypatch.setattr(torch.cuda, "set_device", lambda d: None)
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising=False)
+    monkeypatch.setattr(torch.backends.cudnn, "benchmark", False)
+    monkeypatch.setattr(_dev, "_select_directml", lambda index: None)
+    return props
+
+
+def _smoke(working):
+    return lambda dev: None if dev.index in working else "CUDA error: device kernel image is invalid"
+
+
+def test_smoke_test_passes_on_cpu():
+    assert _dev.gpu_smoke_test(torch.device("cpu")) is None
+
+
+def test_auto_skips_gpu_without_kernels(fake_hip, monkeypatch):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke({1}))
+    info = _dev.select_device("auto")
+    assert info.backend == "rocm" and info.device.index == 1 and info.arch == "gfx1100"
+    assert any("GPU 0" in n and "dilewati" in n for n in info.notes)
+
+
+def test_auto_prefers_largest_working_gpu(fake_hip, monkeypatch):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke({0, 1}))
+    assert _dev.select_device("auto").device.index == 0
+
+
+def test_no_working_gpu_raises_with_fix_instead_of_cpu(fake_hip, monkeypatch):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke(set()))
+    with pytest.raises(_dev.GpuNotUsableError) as err:
+        _dev.select_device("auto")
+    text = str(err.value)
+    assert "gfx1031" in text and "gfx1100" in text and "--device cpu" in text
+    assert _dev.select_device("cpu").backend == "cpu"  # CPU tetap bisa dipilih eksplisit
+
+
+def test_explicit_broken_index_raises(fake_hip, monkeypatch):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke({1}))
+    with pytest.raises(_dev.GpuNotUsableError):
+        _dev.select_device("rocm", index=0)
+    assert _dev.select_device("rocm", index=1).device.index == 1
+
+
+def test_list_devices_reports_kernel_status(fake_hip, monkeypatch):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke({1}))
+    text = "\n".join(_dev.list_devices())
+    assert "index 0: AMD Radeon RX 6800 XT gfx1031" in text and "TIDAK BISA DIPAKAI" in text
+    assert "index 1: AMD Radeon RX 7600 gfx1100" in text and "-> OK" in text
+
+
+def test_hip_selftest_for_installer(fake_hip, monkeypatch, capsys):
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke(set()))
+    assert _dev.hip_selftest() == 1
+    monkeypatch.setattr(_dev, "gpu_smoke_test", _smoke({1}))
+    assert _dev.hip_selftest() == 0
+    assert "GAGAL" in capsys.readouterr().out
+
+
+def test_explain_gpu_error_matches_reported_message():
+    assert "install_windows.bat" in _dev.explain_gpu_error(RuntimeError(USER_ERROR)) or \
+        "TORCH_INDEX_URL" in _dev.explain_gpu_error(RuntimeError(USER_ERROR))
+    assert _dev.explain_gpu_error(RuntimeError("some other failure")) is None

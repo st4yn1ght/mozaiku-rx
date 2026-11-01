@@ -52,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("perangkat")
     g.add_argument("--device", default="auto", help="auto | rocm | directml | cuda | cpu (default: auto)")
-    g.add_argument("--gpu-index", type=int, default=0, help="indeks GPU bila ada lebih dari satu")
+    g.add_argument("--gpu-index", type=int, default=None,
+                   help="indeks GPU (default: otomatis memilih GPU yang berfungsi dengan VRAM terbesar)")
     g.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=None,
                    help="paksa presisi FP16 aktif/nonaktif (default mengikuti preset)")
     g.add_argument("--hsa-override-gfx", metavar="X.Y.Z",
@@ -185,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.ffmpeg:
         probe_mod.set_ffmpeg_paths(args.ffmpeg)
 
-    from .device import gpu_setup_hint, list_devices, select_device
+    from .device import explain_gpu_error, gpu_setup_hint, list_devices, select_device
 
     if args.list_devices:
         for line in list_devices():
@@ -297,6 +298,9 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             failures += 1
             log(f"  GAGAL: {exc}")
+            hint = explain_gpu_error(exc)
+            if hint:
+                log(hint)
             if os.environ.get("MOSAIC_RESTORE_DEBUG"):
                 traceback.print_exc()
             if not args.keep_going:

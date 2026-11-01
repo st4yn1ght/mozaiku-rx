@@ -62,17 +62,10 @@ say "Membuat virtualenv .venv"
 . .venv/bin/activate
 python -m pip install --upgrade pip wheel >/dev/null || die "Gagal upgrade pip"
 
+# Uji dengan perhitungan sungguhan di GPU: build tanpa kernel untuk arsitektur GPU ini
+# (hipErrorInvalidImage) ditolak. Bila GPU belum terlihat (izin grup), build HIP tetap diterima.
 torch_hip_ok() {
-  python - <<'EOF'
-import sys
-try:
-    import torch, torchvision  # noqa: F401
-except Exception as e:
-    print("  import torch gagal:", e); sys.exit(1)
-hip = getattr(torch.version, "hip", None)
-print(f"  torch {torch.__version__} | HIP {hip} | GPU tersedia: {torch.cuda.is_available()}")
-sys.exit(0 if hip else 1)
-EOF
+  python -c 'import sys, torchvision; from mosaic_restore.device import hip_selftest; sys.exit(hip_selftest(allow_no_gpu=True))'
 }
 
 try_pip() {

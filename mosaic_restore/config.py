@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, replace
 class Settings:
     # --- perangkat ---
     device: str = "auto"            # auto | rocm | directml | cuda | cpu
-    gpu_index: int = 0
+    gpu_index: int | None = None    # None = otomatis: GPU berfungsi dengan VRAM terbesar
     fp16: bool = False              # presisi setengah (lebih cepat, sedikit kurang akurat)
 
     # --- model ---

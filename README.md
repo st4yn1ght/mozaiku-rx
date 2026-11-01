@@ -208,6 +208,7 @@ restore.bat --check
 | Masalah | Solusi |
 |---|---|
 | FFmpeg tidak ditemukan, atau error `WinError 2/3` saat mulai | Pilih salah satu: (1) `winget install Gyan.FFmpeg`; (2) ekstrak FFmpeg *full build* dari gyan.dev ke folder program ini dengan nama `ffmpeg` (sehingga ada `ffmpeg\bin\ffmpeg.exe`); (3) tunjukkan lokasinya dengan `--ffmpeg "C:\lokasi\ffmpeg\bin"`. |
+| `device kernel image is invalid` / `hipErrorInvalidImage` | PyTorch ROCm yang terpasang tidak berisi kernel untuk GPU Anda. Jalankan ulang `install_windows.bat`: installer menguji GPU dengan perhitungan sungguhan lalu memilih build yang cocok atau DirectML. Bisa juga langsung `install_windows.bat -DirectML`. Di Linux: `--hsa-override-gfx 10.3.0` (RX 6000) atau `11.0.0` (RX 7600/780M). |
 | "berjalan di CPU" | Jalankan `mosaic-restore --list-devices`. Perbarui driver, lalu jalankan ulang installer. Di Linux, cek grup `render`/`video`. |
 | RX 6700/6600 di Linux tidak terpakai | Tambahkan `--hsa-override-gfx 10.3.0` |
 | VRAM habis (out of memory) | Program otomatis memecah klip. Bisa juga pakai `--clip-length 90` atau `--preset fast`. |

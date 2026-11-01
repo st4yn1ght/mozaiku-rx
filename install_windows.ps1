@@ -81,8 +81,10 @@ $vpy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 
 # Catatan: di dalam fungsi PowerShell, output perintah native ikut menjadi nilai
 # kembalian. Semua output diarahkan ke Out-Host agar fungsi hanya mengembalikan bool.
+# Uji dengan PERHITUNGAN SUNGGUHAN di GPU, bukan hanya "GPU terlihat": build yang
+# tidak berisi kernel untuk arsitektur GPU ini (hipErrorInvalidImage) ditolak.
 function Test-Hip {
-    & $vpy -c "import sys, torch, torchvision; hip = getattr(torch.version, 'hip', None); ok = bool(hip) and torch.cuda.is_available(); print(f'  torch {torch.__version__} | HIP {hip} | GPU: {torch.cuda.is_available()}'); sys.exit(0 if ok else 1)" | Out-Host
+    & $vpy -c "import sys, torchvision; from mosaic_restore.device import hip_selftest; sys.exit(hip_selftest())" | Out-Host
     return ($LASTEXITCODE -eq 0)
 }
 function Try-Pip([string[]]$pipArgs) {

@@ -94,40 +94,115 @@ def gpu_setup_hint() -> str:
     return "Backend GPU tidak tersedia pada sistem ini."
 
 
-def _select_hip_or_cuda(index: int, want: str) -> DeviceInfo | None:
+class GpuNotUsableError(RuntimeError):
+    """GPU terlihat, tetapi build PyTorch yang terpasang tidak bisa menjalankan kernel di sana."""
+
+
+_KERNEL_ERROR_MARKERS = ("hiperrorinvalidimage", "kernel image is invalid", "no kernel image",
+                         "invalid device function", "hiperrornobinaryforgpu", "no binary for gpu")
+
+
+def gpu_smoke_test(device) -> str | None:
+    """Jalankan beban kecil yang mewakili operasi model (conv, pooling, bicubic,
+    pixel-shuffle, grid-sample, matmul). Kembalikan None bila OK, atau pesan error.
+
+    ``torch.cuda.is_available()`` saja tidak cukup: GPU bisa "terlihat" walau build
+    PyTorch tidak berisi kernel untuk arsitekturnya (hipErrorInvalidImage).
+    """
+    import torch
+    import torch.nn.functional as F
+
+    try:
+        x = torch.rand(1, 32, 64, 64, device=device)
+        w = torch.rand(32, 32, 3, 3, device=device) * 0.05
+        y = F.leaky_relu(F.conv2d(x, w, padding=1), 0.1)
+        y = F.silu(F.max_pool2d(y, 3, 1, 1)) + F.avg_pool2d(y, 3, 1, 1)
+        y = F.interpolate(y, scale_factor=0.5, mode="bicubic", align_corners=False)
+        y = F.pixel_shuffle(y, 2)
+        grid = torch.rand(1, 32, 32, 2, device=device) * 2 - 1
+        y = F.grid_sample(y, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        z = torch.sigmoid(y).flatten(1) @ torch.tanh(y).flatten(1).t()
+        value = float(z.sum().cpu())
+        if value != value:
+            return "hasil perhitungan NaN"
+        return None
+    except Exception as exc:  # noqa: BLE001 - laporkan alasan apa adanya
+        text = str(exc).strip().splitlines()
+        return text[0] if text else type(exc).__name__
+
+
+def _arch_of(props) -> str | None:
+    arch = getattr(props, "gcnArchName", None)
+    return arch.split(":")[0] if arch else None
+
+
+def gpu_fix_hint(archs=()) -> str:
+    lines = ["Artinya build PyTorch ROCm yang terpasang tidak berisi kernel untuk arsitektur GPU tersebut."]
+    if sys.platform == "win32":
+        lines += [
+            "Cara memperbaiki:",
+            "  1) Jalankan ulang install_windows.bat. Installer kini menguji GPU dengan perhitungan",
+            "     sungguhan dan otomatis memilih build yang cocok, atau beralih ke DirectML.",
+            "  2) Atau langsung pakai DirectML (mendukung semua GPU AMD, lebih lambat):",
+            "     install_windows.bat -DirectML",
+        ]
+    else:
+        lines.append("Cara memperbaiki:")
+        if any(a and a.startswith("gfx103") and a != "gfx1030" for a in archs):
+            lines.append("  - RX 6000 non-resmi: jalankan dengan --hsa-override-gfx 10.3.0")
+        if any(a in ("gfx1101", "gfx1102", "gfx1103") for a in archs):
+            lines.append("  - RX 7600/7700/780M: coba --hsa-override-gfx 11.0.0")
+        lines.append("  - Atau pasang ulang PyTorch yang sesuai GPU Anda: TORCH_INDEX_URL=<url> ./install_linux.sh")
+    lines.append("Sementara waktu (sangat lambat): --device cpu")
+    return "\n".join(lines)
+
+
+def explain_gpu_error(exc: BaseException) -> str | None:
+    """Petunjuk perbaikan untuk error kernel HIP/CUDA yang dikenal (None bila bukan)."""
+    msg = str(exc).lower()
+    return gpu_fix_hint() if any(m in msg for m in _KERNEL_ERROR_MARKERS) else None
+
+
+def _select_hip_or_cuda(index: int | None, want: str) -> DeviceInfo | None:
     import torch
 
     if not torch.cuda.is_available():
         return None
     is_hip = getattr(torch.version, "hip", None) is not None
-    if want == "rocm" and not is_hip:
-        return None
-    if want == "cuda" and is_hip:
+    if (want == "rocm" and not is_hip) or (want == "cuda" and is_hip):
         return None
     count = torch.cuda.device_count()
-    if index >= count:
-        raise RuntimeError(f"GPU index {index} tidak ada (hanya {count} GPU terdeteksi).")
-    dev = torch.device(f"cuda:{index}")
-    torch.cuda.set_device(dev)
-    props = torch.cuda.get_device_properties(index)
-    arch = getattr(props, "gcnArchName", None)
-    if arch:
-        arch = arch.split(":")[0]
-    # MIOpen/cuDNN akan memilih kernel konvolusi tercepat untuk ukuran input tetap
-    # (crop 256x256 & deteksi 640) -> sangat menguntungkan di sini.
-    torch.backends.cudnn.benchmark = True
-    info = DeviceInfo(
-        backend="rocm" if is_hip else "cuda",
-        device=dev,
-        name=props.name,
-        vram_bytes=int(props.total_memory),
-        arch=arch,
-    )
-    if is_hip:
-        info.notes.append(f"HIP {torch.version.hip}")
-        if os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
-            info.notes.append(f"HSA_OVERRIDE_GFX_VERSION={os.environ['HSA_OVERRIDE_GFX_VERSION']}")
-    return info
+    devices = [(i, torch.cuda.get_device_properties(i)) for i in range(count)]
+    if index is not None:
+        if index >= count:
+            raise RuntimeError(f"GPU index {index} tidak ada (hanya {count} GPU terdeteksi).")
+        order = [devices[index]]
+    else:
+        # VRAM terbesar dulu: kartu grafis diutamakan daripada iGPU Ryzen ("AMD Radeon(TM) Graphics")
+        order = sorted(devices, key=lambda d: int(d[1].total_memory), reverse=True)
+    failures = []
+    for i, props in order:
+        dev = torch.device(f"cuda:{i}")
+        err = gpu_smoke_test(dev)
+        if err is not None:
+            failures.append((i, props.name, _arch_of(props), err))
+            continue
+        torch.cuda.set_device(dev)
+        # MIOpen/cuDNN memilih kernel konvolusi tercepat untuk ukuran input tetap
+        # (crop 256x256 & deteksi 640) -> sangat menguntungkan di sini.
+        torch.backends.cudnn.benchmark = True
+        info = DeviceInfo(backend="rocm" if is_hip else "cuda", device=dev, name=props.name,
+                          vram_bytes=int(props.total_memory), arch=_arch_of(props))
+        if is_hip:
+            info.notes.append(f"HIP {torch.version.hip}")
+            if os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
+                info.notes.append(f"HSA_OVERRIDE_GFX_VERSION={os.environ['HSA_OVERRIDE_GFX_VERSION']}")
+        for fi, fname, farch, _ in failures:
+            info.notes.append(f"GPU {fi} ({fname}{' ' + farch if farch else ''}) dilewati: tidak didukung build ini")
+        return info
+    lines = ["GPU terdeteksi, tetapi PyTorch yang terpasang tidak bisa menjalankan perhitungan di GPU ini:"]
+    lines += [f"  - GPU {i}: {name}{' (' + arch + ')' if arch else ''}: {err}" for i, name, arch, err in failures]
+    raise GpuNotUsableError("\n".join(lines) + "\n" + gpu_fix_hint([a for _, _, a, _ in failures]))
 
 
 def _select_directml(index: int) -> DeviceInfo | None:
@@ -146,7 +221,7 @@ def _select_directml(index: int) -> DeviceInfo | None:
                       notes=["DirectML (lebih lambat dari ROCm, FP32)"])
 
 
-def select_device(preference: str = "auto", index: int = 0) -> DeviceInfo:
+def select_device(preference: str = "auto", index: int | None = None) -> DeviceInfo:
     import torch
 
     pref = (preference or "auto").lower()
@@ -155,19 +230,31 @@ def select_device(preference: str = "auto", index: int = 0) -> DeviceInfo:
     if pref == "dml":
         pref = "directml"
 
+    rocm_problem: GpuNotUsableError | None = None
     if pref in ("auto", "rocm"):
-        info = _select_hip_or_cuda(index, "rocm")
+        try:
+            info = _select_hip_or_cuda(index, "rocm")
+        except GpuNotUsableError as exc:
+            if pref == "rocm":
+                raise
+            info, rocm_problem = None, exc
         if info:
             return info
         if pref == "rocm":
             raise RuntimeError("Backend ROCm tidak tersedia.\n" + gpu_setup_hint())
 
     if pref in ("auto", "directml"):
-        info = _select_directml(index)
+        info = _select_directml(index or 0)
         if info:
+            if rocm_problem is not None:
+                info.notes.append("ROCm tidak bisa dipakai di GPU ini -> memakai DirectML")
             return info
         if pref == "directml":
             raise RuntimeError("torch-directml tidak terpasang / tidak menemukan GPU.")
+
+    if rocm_problem is not None:
+        # Jangan diam-diam pindah ke CPU (puluhan kali lebih lambat): jelaskan cara memperbaiki.
+        raise rocm_problem
 
     if pref in ("auto", "cuda"):
         info = _select_hip_or_cuda(index, "cuda")
@@ -187,7 +274,8 @@ def select_device(preference: str = "auto", index: int = 0) -> DeviceInfo:
     raise ValueError(f"Pilihan device tidak dikenal: {preference}")
 
 
-def list_devices() -> list[str]:
+def list_devices(test: bool = True) -> list[str]:
+    """Daftar perangkat; dengan ``test=True`` setiap GPU diuji dengan perhitungan sungguhan."""
     import torch
 
     lines = [f"PyTorch {torch.__version__}"]
@@ -196,19 +284,52 @@ def list_devices() -> list[str]:
         kind = f"ROCm/HIP {hip}" if hip else f"CUDA {torch.version.cuda}"
         for i in range(torch.cuda.device_count()):
             p = torch.cuda.get_device_properties(i)
-            arch = getattr(p, "gcnArchName", "") or ""
-            lines.append(f"  [{kind}] index {i}: {p.name} {arch} {p.total_memory / 2**30:.1f} GB")
+            status = ""
+            if test:
+                err = gpu_smoke_test(torch.device(f"cuda:{i}"))
+                status = " -> OK" if err is None else f" -> TIDAK BISA DIPAKAI ({err})"
+            lines.append(f"  [{kind}] index {i}: {p.name} {_arch_of(p) or ''} "
+                         f"{p.total_memory / 2**30:.1f} GB{status}")
     else:
         lines.append("  ROCm/CUDA: tidak tersedia" + (f" (build HIP {hip})" if hip else ""))
     try:
         import torch_directml  # type: ignore
 
         for i in range(torch_directml.device_count()):
-            lines.append(f"  [DirectML] index {i}: {torch_directml.device_name(i)}")
-    except Exception:
+            status = ""
+            if test:
+                err = gpu_smoke_test(torch_directml.device(i))
+                status = " -> OK" if err is None else f" -> GAGAL ({err})"
+            lines.append(f"  [DirectML] index {i}: {torch_directml.device_name(i)}{status}")
+    except ImportError:
         lines.append("  DirectML: tidak terpasang")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  DirectML: error ({exc})")
     lines.append("  [CPU] selalu tersedia (lambat)")
     return lines
+
+
+def hip_selftest(allow_no_gpu: bool = False) -> int:
+    """Untuk installer: 0 bila build PyTorch HIP bisa menghitung di minimal satu GPU."""
+    import torch
+
+    hip = getattr(torch.version, "hip", None)
+    visible = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    print(f"  torch {torch.__version__} | HIP {hip} | GPU terlihat: {visible}")
+    if not hip:
+        return 1
+    if visible == 0:
+        if allow_no_gpu:
+            print("  (GPU belum terlihat: cek driver / izin grup render,video; build HIP tetap dipakai)")
+            return 0
+        return 1
+    ok = False
+    for i in range(visible):
+        p = torch.cuda.get_device_properties(i)
+        err = gpu_smoke_test(torch.device(f"cuda:{i}"))
+        print(f"  GPU {i}: {p.name} {_arch_of(p) or ''} -> {'OK' if err is None else 'GAGAL: ' + err}")
+        ok = ok or err is None
+    return 0 if ok else 1
 
 
 def is_oom_error(exc: BaseException) -> bool:
