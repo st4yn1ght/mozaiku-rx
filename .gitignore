@@ -1,9 +1,15 @@
+# Lingkungan & cache Python
 .venv/
-models/
 __pycache__/
 *.pyc
 .pytest_cache/
-.constraints.txt
-*.part.*
-mosaic-restore
 *.egg-info/
+
+# Dibuat oleh installer / saat pemakaian (hanya di root proyek).
+# Garis miring di depan penting: tanpa itu, folder paket "mosaic_restore/models/" ikut terabaikan.
+/models/
+/.constraints.txt
+/mosaic-restore
+
+# File output sementara saat proses berjalan
+*.part.*
